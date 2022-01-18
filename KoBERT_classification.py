@@ -44,7 +44,7 @@ dataFileName = './dfFinal.csv'
 x_dataFieldName = 'precSentences'
 y_dataFieldName = 'case_sort'
 
-sampleRatio = 0.01 # 실전의 경우 1
+sampleRatio = 1 # 실전의 경우 1
 targetDimension = 512 # pretrained model에 따라 조정
 num_labels = 7 # transfer learing 데이터에 따라 조정
 dr_rate = 0.4
