@@ -17,6 +17,11 @@ from transformers import BertForSequenceClassification
 from transformers import AdamW
 from transformers.optimization import get_cosine_schedule_with_warmup
 
+from typing import Any, Dict, List, Optional
+from transformers.tokenization_utils import AddedToken
+from transformers import XLNetTokenizer
+from transformers import SPIECE_UNDERLINE
+
 # from transformers import AutoTokenizer, AutoModel
 # tokenizer = AutoTokenizer.from_pretrained("skt/kobert-base-v1")
 # model = AutoModel.from_pretrained("skt/kobert-base-v1")
@@ -34,10 +39,28 @@ from transformers.optimization import get_cosine_schedule_with_warmup
 # print(result)
 # print(kcbert_tokenizer.vocab['대선'])
 # print([kcbert_tokenizer.encode(token) for token in result])
-from typing import Any, Dict, List, Optional
-from transformers.tokenization_utils import AddedToken
-from transformers import XLNetTokenizer
-from transformers import SPIECE_UNDERLINE
+
+dataFileName = './dfFinal.csv'
+x_dataFieldName = 'precSentences'
+y_dataFieldName = 'case_sort'
+
+sampleRatio = 0.01 # 실전의 경우 1
+targetDimension = 512 # pretrained model에 따라 조정
+num_labels = 7 # transfer learing 데이터에 따라 조정
+dr_rate = 0.4
+    
+batch_size = 2
+epochs = 4 
+
+# AdamW 사용시 필요
+warmup_steps = None
+warmup_ratio = 0.1
+weight_decay = 0.01
+
+max_grad_norm = 1
+log_interval = 100
+learning_rate = 5e-5
+
 
 
 class KoBERTTokenizer(XLNetTokenizer):
@@ -181,27 +204,6 @@ class KoBERTTokenizer(XLNetTokenizer):
             return len(cls + token_ids_0 + sep) * [0]
         return len(cls + token_ids_0 + sep) * [0] + len(token_ids_1 + sep) * [1]
 
-dataFileName = './dfFinal.csv'
-x_dataFieldName = 'precSentences'
-y_dataFieldName = 'case_sort'
-
-sampleRatio = 1 # 실전의 경우 1
-targetDimension = 512 # pretrained model에 따라 조정
-num_labels = 7 # transfer learing 데이터에 따라 조정
-dr_rate = 0.4
-#device = torch.device("cuda") # model / dataset ...to(device)
-    
-batch_size = 2
-epochs = 4 
-
-# AdamW 사용시 필요
-warmup_steps = None
-warmup_ratio = 0.1
-weight_decay = 0.01
-
-max_grad_norm = 1
-log_interval = 100
-learning_rate = 5e-5
 
 class Vocabulary(object):
     
@@ -285,35 +287,6 @@ class Vocabulary(object):
     def __len__(self):
         return len(self._token_to_idx)
 
-def dataloader_factory(df, x_dataFieldName, targetDimension, batch_size):       
-    # vectorizing
-    print("vectorizing...")
-    data = {'input_ids':[], 'attention_mask': [], 'token_type_ids': [], 'label': []}
-    
-    for i in tqdm(range(len(df))):
-        tuple = vectorize(tokenizer, df.iloc[i], x_dataFieldName, targetDimension)
-        data['input_ids'].append(tuple[0])
-        data['attention_mask'].append(tuple[1])
-        data['token_type_ids'].append(tuple[2])
-        data['label'].append(df.iloc[i]['label'])
-        
-    datadf = pd.DataFrame(data)
-    print(datadf.info())
-    print(datadf.head())
-    print()
-    
-    # dataloader setting
-    print("Torch Dataset / Torch DataLoader instantiating...")
-    dataset = BERTDataset(data)
-    dataLoader = DataLoader(dataset, 
-                            batch_size=batch_size, 
-                            shuffle = True, 
-                            # collate_fn=lambda x:x # 배치 리스트 요소를 데이터 개별 인스턴스로 세팅
-                            )
-    print("done!")
-    print()
-    return dataLoader 
-
 def vectorize(vectorizer, data, field, length):
     
     vectorized = vectorizer(data[field])
@@ -340,9 +313,39 @@ def vectorize(vectorizer, data, field, length):
     # print('\n', len(inputIds), len(attentionMask), len(tokenTypeIds))
     return (inputIds, attentionMask, tokenTypeIds)
 
+def dataloader_factory(device, df, x_dataFieldName, targetDimension, batch_size):       
+    # vectorizing
+    print("vectorizing...")
+    data = {'input_ids':[], 'attention_mask': [], 'token_type_ids': [], 'label': []}
+    
+    for i in tqdm(range(len(df))):
+        tuple = vectorize(tokenizer, df.iloc[i], x_dataFieldName, targetDimension)
+        data['input_ids'].append(tuple[0])
+        data['attention_mask'].append(tuple[1])
+        data['token_type_ids'].append(tuple[2])
+        data['label'].append(df.iloc[i]['label'])
+        
+    datadf = pd.DataFrame(data)
+    print(datadf.info())
+    print(datadf.head())
+    print()
+    
+    # dataloader setting
+    print("Torch Dataset / Torch DataLoader instantiating...")
+    dataset = BERTDataset(data, device)
+
+    dataLoader = DataLoader(dataset, 
+                            batch_size=batch_size, 
+                            shuffle = True, 
+                            # collate_fn=lambda x:x # 배치 리스트 요소를 데이터 개별 인스턴스로 세팅
+                            )
+    print("done!")
+    print()
+    return dataLoader, dataset
+
 class BERTDataset(Dataset):
     
-    def __init__(self, dataset):
+    def __init__(self, dataset, device):
 
         self.dataset = dataset # python dictionary type dataset
         
@@ -356,17 +359,15 @@ class BERTDataset(Dataset):
         """
         
         input_ids = \
-            torch.LongTensor(np.array(self.dataset['input_ids'][index]))
-
+            torch.LongTensor(np.array(self.dataset['input_ids'][index])).to(device)
         attention_mask = \
-            torch.LongTensor(np.array(self.dataset['attention_mask'][index]))
+            torch.LongTensor(np.array(self.dataset['attention_mask'][index])).to(device)
         
         token_type_ids = \
-            torch.LongTensor(np.array(self.dataset['token_type_ids'][index]))
+            torch.LongTensor(np.array(self.dataset['token_type_ids'][index])).to(device)
         
         label = \
-            torch.LongTensor(np.array([self.dataset['label'][index]]))
-
+            torch.LongTensor(np.array([self.dataset['label'][index]])).to(device)
         # print()
         # print("index and label: ")
         # print(index)       
@@ -377,7 +378,8 @@ class BERTDataset(Dataset):
 
     def __len__(self):
         return (len(self.dataset['label']))
-      
+
+'''      
 class BERTClassifier(nn.Module):
     def __init__(self,
                  bert,
@@ -387,11 +389,11 @@ class BERTClassifier(nn.Module):
                  ):
         super(BERTClassifier, self).__init__()
         self.bert = bert
-        self.dr_rate = dr_rate
+        # self.dr_rate = dr_rate
                  
-        self.classifier = nn.Linear(hidden_size , num_classes)
-        if dr_rate:
-            self.dropout = nn.Dropout(p=dr_rate)
+        # self.classifier = nn.Linear(hidden_size , num_classes)
+        # if dr_rate:
+        #     self.dropout = nn.Dropout(p=dr_rate)
     
     def forward(self, input_ids, attention_mask, token_type_ids): 
         # overriding __call__() function
@@ -411,11 +413,12 @@ class BERTClassifier(nn.Module):
         # return self.classifier(out)
         
         return pooler
+'''
 
 #정확도 측정을 위한 함수 정의
 def calc_accuracy(logitsTensorList,labelList):
     max_vals, max_indices = torch.max(logitsTensorList, 1) #
-    train_acc = (max_indices == labelList).sum().data.cpu().numpy()/max_indices.size()[0]
+    train_acc = (max_indices == labelList).sum().data.cpu().numpy()/max_indices.size()[0] ###################################################################################################
     # 두 리스트의 같은 위치의 요소를 비교해서 조건식을 충족하는 경우에는 그 충족 횟수의 합계를 내고
     # 그 합계를 리스트의 요소 갯수로 나누어 점수를 구함
     return train_acc
@@ -423,7 +426,7 @@ def calc_accuracy(logitsTensorList,labelList):
 def predict(predict_sentence):
         
     data = {'precSentences': predict_sentence, 'label': 0}
-    dataloader= dataloader_factory(pd.DataFrame(data), x_dataFieldName, targetDimension, 1)
+    dataloader= dataloader_factory(device, pd.DataFrame(data), x_dataFieldName, targetDimension, 1)[0]
     
     bertmodel.eval()
 
@@ -436,7 +439,7 @@ def predict(predict_sentence):
         test_eval=[]
         for i in out.logits:
             logits=i
-            logits = logits.detach().cpu().numpy()
+            logits = logits.detach().cpu().numpy()     #####################################################################################################################################################
 
             if np.argmax(logits) == 0:
                 test_eval.append("민사")
@@ -457,6 +460,13 @@ def predict(predict_sentence):
         
 if __name__ == '__main__' :
     
+    # CUDA 체크
+    cuda=True
+    if not torch.cuda.is_available():
+        cuda = False        
+    device = torch.device("cuda" if cuda else "cpu")
+    print("CUDA 사용여부: {}".format(cuda))
+
     # model loading
     print("model loading...")
     model = \
@@ -467,7 +477,7 @@ if __name__ == '__main__' :
         model = pickle.load(f)
     print()
          
-    # tokenizer loading
+    # toke0nizer loading
     print("tokenizer loading...")
     tokenizer = KoBERTTokenizer.from_pretrained('skt/kobert-base-v1')
     with open('kobertbasev1tokenizer.pickle', 'wb') as f:
@@ -560,20 +570,22 @@ if __name__ == '__main__' :
     print("train dataset...")
     print(dfTrainSample.info())
     print()
-    train_loader = dataloader_factory(dfTrainSample, 
+    train_loader, dataset = dataloader_factory(device, dfTrainSample, 
                                       x_dataFieldName, 
                                       targetDimension,
-                                      batch_size=batch_size
-                                      )    
+                                      batch_size=batch_size,
+                                    
+                                      )
     ###########################################
     print("test dataset...")
     print(dfTestSample.info())
     print()
-    test_loader = dataloader_factory(dfTestSample, 
+    test_loader = dataloader_factory(device,dfTestSample, 
                                      x_dataFieldName, 
                                      targetDimension,
-                                     batch_size=batch_size
-                                     )    
+                                     batch_size=batch_size,
+                                     
+                                     )[0] 
     ###########################################
     
     # TRAINING
@@ -581,7 +593,8 @@ if __name__ == '__main__' :
     input()
     
     # model object setting
-    bertmodel = BERTClassifier(model)
+    bertmodel = model
+    bertmodel.to(device)######################################################################################################
     
     # optimizer와 scheduler 설정
     t_total = len(train_loader) * epochs
@@ -600,7 +613,11 @@ if __name__ == '__main__' :
             num_training_steps=t_total)
 
     # loss function setting
-    loss_fn = nn.CrossEntropyLoss()
+    
+    # dataset.class_weights = dataset.class_weights.to(device)     ## BERTDataset object has no attribute 'class_weights' 
+        
+    loss_fn = nn.CrossEntropyLoss()   ## BERTDataset object has no attribute 'class_weights' 
+    # loss_fn = nn.CrossEntropyLoss()
    
     # GO! 
     train_history=[]
@@ -615,16 +632,20 @@ if __name__ == '__main__' :
         #TRAINING
         bertmodel.train()
         for batch_id, batch in enumerate(tqdm(train_loader)):
-            
             if batch_id % log_interval == 0 : 
                 print(f"Epoch : {e+1} in {epochs} / Minibatch Step : {batch_id}")
 
             # print(type(item))
             # print(item)
             # print(item.__dir__)
-                        
+         
             input_ids, attention_mask, token_type_ids, label = batch
+
+            # input_ids.to(device) ################################################################################
+            # attention_mask.to(device) ############################################################################
+            # token_type_ids.to(device) ########################################################
             label = label.squeeze(1)
+            # label.to(device) ######################################
             
             # print(input_ids)
             # print(attention_mask)
@@ -674,17 +695,31 @@ if __name__ == '__main__' :
                 print("epoch {} batch id {} loss {} train acc {}".format(e+1, batch_id+1, loss.data.cpu().numpy(), train_acc / (batch_id+1)))
                 train_history.append(train_acc / (batch_id+1))
                 loss_history.append(loss.data.cpu().numpy())
+                with open(f"bert{e}model{batch_id}.model", 'wb') as f:
+                    pickle.dump(bertmodel, f)
+                with open(f"train{e}_history{batch_id}.history", 'wb') as f:
+                    pickle.dump(train_history, f)
+                with open(f"loss{e}_history{batch_id}.history", 'wb') as f:
+                    pickle.dump(loss_history, f)
+            
+            # train_acc += calc_accuracy(out.logits, label)
+            # # train_acc += loss.item()
+                        
+            # if batch_id % log_interval == 0:
+            #     print("epoch {} batch id {} loss {} train acc {}".format(e+1, batch_id+1, loss.data.cpu().numpy(), train_acc / (batch_id+1)))          #############################################################################
+            #     train_history.append(train_acc / (batch_id+1))
+            #     loss_history.append(loss.data.cpu().numpy()) #######################################################################################
                 
-        print("epoch {} train acc {}".format(e+1, train_acc / (batch_id+1)))
+        # print("epoch {} train acc {}".format(e+1, train_acc / (batch_id+1)))
     
         # EVALUATING
         bertmodel.eval()
         for batch_id, item in enumerate(tqdm(test_loader)):
-            
+            batchCuda=batch.to(device)
             if batch_id % log_interval == 0 : 
                 print(f"Epoch : {e+1} in {epochs} / Minibatch Step : {batch_id}")
                         
-            input_ids, attention_mask, token_type_ids, label = batch
+            input_ids, attention_mask, token_type_ids, label = batchCuda
             label = label.squeeze(1)
         
             out = bertmodel(input_ids, attention_mask, token_type_ids)
