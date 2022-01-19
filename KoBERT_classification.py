@@ -715,7 +715,7 @@ if __name__ == '__main__' :
         # EVALUATING
         bertmodel.eval()
         for batch_id, item in enumerate(tqdm(test_loader)):
-            batchCuda=batch.to(device)
+       
             if batch_id % log_interval == 0 : 
                 print(f"Epoch : {e+1} in {epochs} / Minibatch Step : {batch_id}")
                         
