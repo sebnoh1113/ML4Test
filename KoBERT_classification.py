@@ -730,11 +730,11 @@ if __name__ == '__main__' :
         test_history.append(test_acc / (batch_id+1))
     
     # trained model saving...
-    print('trained model saving...')
-    fileNameForTrainedModel = f'kobertbasev1model_trained_{datetime.now()}.pickle' 
-    with open(fileNameForTrainedModel, 'wb') as f:
-        pickle.dump(bertmodel, f, pickle.HIGHEST_PROTOCOL)
-    print()
+    # print('trained model saving...')
+    # fileNameForTrainedModel = f'kobertbasev1model_trained_{datetime.now()}.pickle' 
+    # with open(fileNameForTrainedModel, 'wb') as f:
+    #     pickle.dump(bertmodel, f, pickle.HIGHEST_PROTOCOL)
+    # print()
 
     #질문 무한반복하기! 0 입력시 종료
     while True :
