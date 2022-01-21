@@ -44,7 +44,7 @@ dataFileName = './dfFinal.csv'
 x_dataFieldName = 'precSentences'
 y_dataFieldName = 'case_sort'
 
-sampleRatio = 1 # 실전의 경우 1
+sampleRatio = 0.001 # 실전의 경우 1
 targetDimension = 512 # pretrained model에 따라 조정
 num_labels = 7 # transfer learing 데이터에 따라 조정
 dr_rate = 0.4
@@ -60,7 +60,7 @@ weight_decay = 0.01
 max_grad_norm = 1
 log_interval = 100
 learning_rate = 5e-5
-
+early_stopping_criteria=5
 
 
 class KoBERTTokenizer(XLNetTokenizer):
@@ -457,7 +457,69 @@ def predict(predict_sentence):
                 test_eval.append("특별")
 
         print(">> 입력하신 내용은 " + test_eval[0] + " 사건에 해당합니다.")
-        
+
+
+
+#################################### 최상 모델 저장을 위해 ############################################################################
+def make_train_state():
+    return {'stop_early': False,
+            'early_stopping_step': 0,
+            'early_stopping_best_val': 1e8,
+            'learning_rate': learning_rate,
+            'each_batch': 0,
+            'train_loss': [],
+            'train_acc': [],
+            'loss': [],
+            'acc': [],
+            'test_loss': -1,
+            'test_acc': -1,
+            'model_filename': 'best_model'}
+
+
+def update_train_state(model, train_state):
+    """ 훈련 상태를 업데이트합니다.
+
+    Components:
+        - 조기 종료: 과대 적합 방지
+        - 모델 체크포인트: 더 나은 모델을 저장합니다
+
+    :param args: 메인 매개변수
+    :param model: 훈련할 모델
+    :param train_state: 훈련 상태를 담은 딕셔너리
+    :returns:
+        새로운 훈련 상태
+    """
+
+    # 적어도 한 번 모델을 저장합니다
+    if train_state['each_batch'] == 0:
+        torch.save(model.state_dict(), train_state['model_filename'])
+        train_state['stop_early'] = False
+
+    # 성능이 향상되면 모델을 저장합니다
+    elif train_state['each_batch'] >= 1:
+        loss_tm1, loss_t = train_state['loss'][-2:]
+
+        # 손실이 나빠지면
+        if loss_t >= train_state['early_stopping_best_val']:
+            # 조기 종료 단계 업데이트
+            train_state['early_stopping_step'] += 1
+        # 손실이 감소하면
+        else:
+            # 최상의 모델 저장
+            if loss_t < train_state['early_stopping_best_val']:
+                torch.save(model.state_dict(), train_state['model_filename'])
+                with open(f"bert{e}model{batch_id}.model", 'wb') as f:
+                    pickle.dump(bertmodel, f)
+
+            # 조기 종료 단계 재설정
+            train_state['early_stopping_step'] = 0
+
+        # 조기 종료 여부 확인
+        train_state['stop_early'] = \
+            train_state['early_stopping_step'] >= early_stopping_criteria
+
+    return train_state
+
 if __name__ == '__main__' :
     
     # CUDA 체크
@@ -588,9 +650,12 @@ if __name__ == '__main__' :
                                      )[0] 
     ###########################################
     
+
+
+
     # TRAINING
     print("Press Enter Key for training your model...")
-    input()
+    # input()
     
     # model object setting
     bertmodel = model
@@ -619,6 +684,9 @@ if __name__ == '__main__' :
     loss_fn = nn.CrossEntropyLoss()   ## BERTDataset object has no attribute 'class_weights' 
     # loss_fn = nn.CrossEntropyLoss()
    
+    train_state = make_train_state()
+
+
     # GO! 
     train_history=[]
     test_history=[]
@@ -626,12 +694,14 @@ if __name__ == '__main__' :
     
     for e in range(epochs):
         
+        
         train_acc = 0.0
         test_acc = 0.0
         
         #TRAINING
         bertmodel.train()
         for batch_id, batch in enumerate(tqdm(train_loader)):
+            train_state['each_batch'] = batch_id
             if batch_id % log_interval == 0 : 
                 print(f"Epoch : {e+1} in {epochs} / Minibatch Step : {batch_id}")
 
@@ -690,18 +760,27 @@ if __name__ == '__main__' :
             #7 정확도 계산
             train_acc += calc_accuracy(out.logits, label)
             # train_acc += loss.item()
-                        
+                     
             if batch_id % log_interval == 0:
                 print("epoch {} batch id {} loss {} train acc {}".format(e+1, batch_id+1, loss.data.cpu().numpy(), train_acc / (batch_id+1)))
-                train_history.append(train_acc / (batch_id+1))
-                loss_history.append(loss.data.cpu().numpy())
-                with open(f"bert{e}model{batch_id}.model", 'wb') as f:
-                    pickle.dump(bertmodel, f)
-                with open(f"train{e}_history{batch_id}.history", 'wb') as f:
-                    pickle.dump(train_history, f)
-                with open(f"loss{e}_history{batch_id}.history", 'wb') as f:
-                    pickle.dump(loss_history, f)
-            
+            #     train_history.append(train_acc / (batch_id+1))
+            #     loss_history.append(loss.data.cpu().numpy())
+            #     # with open(f"bert{e}model{batch_id}.model", 'wb') as f:
+            #     #     pickle.dump(bertmodel, f)
+            #     with open(f"train{e}_history{batch_id}.history", 'wb') as f:
+            #         pickle.dump(train_history, f)
+            #     with open(f"loss{e}_history{batch_id}.history", 'wb') as f:
+            #         pickle.dump(loss_history, f)
+
+            train_state['loss'].append(loss.data.cpu().numpy())
+            train_state['acc'].append(train_acc / (batch_id+1))
+            train_state = update_train_state(model=bertmodel,
+                                            train_state=train_state)
+
+            if train_state['stop_early']:
+                break
+
+
             # train_acc += calc_accuracy(out.logits, label)
             # # train_acc += loss.item()
                         
@@ -712,6 +791,11 @@ if __name__ == '__main__' :
                 
         # print("epoch {} train acc {}".format(e+1, train_acc / (batch_id+1)))
     
+
+
+
+
+
         # EVALUATING
         bertmodel.eval()
         for batch_id, item in enumerate(tqdm(test_loader)):
@@ -719,7 +803,7 @@ if __name__ == '__main__' :
             if batch_id % log_interval == 0 : 
                 print(f"Epoch : {e+1} in {epochs} / Minibatch Step : {batch_id}")
                         
-            input_ids, attention_mask, token_type_ids, label = batchCuda
+            input_ids, attention_mask, token_type_ids, label = item
             label = label.squeeze(1)
         
             out = bertmodel(input_ids, attention_mask, token_type_ids)
@@ -743,3 +827,10 @@ if __name__ == '__main__' :
             break
         predict(sentence)
         print("\n")
+
+
+
+
+
+
+
