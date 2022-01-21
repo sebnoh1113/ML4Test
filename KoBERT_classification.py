@@ -44,13 +44,13 @@ dataFileName = './dfFinal.csv'
 x_dataFieldName = 'precSentences'
 y_dataFieldName = 'case_sort'
 
-sampleRatio = 0.001 # 실전의 경우 1
+sampleRatio = 1 # 실전의 경우 1
 targetDimension = 512 # pretrained model에 따라 조정
 num_labels = 7 # transfer learing 데이터에 따라 조정
 dr_rate = 0.4
     
 batch_size = 2
-epochs = 4 
+epochs = 100 
 
 # AdamW 사용시 필요
 warmup_steps = None
@@ -466,7 +466,7 @@ def make_train_state():
             'early_stopping_step': 0,
             'early_stopping_best_val': 1e8,
             'learning_rate': learning_rate,
-            'each_batch': 0,
+            'epoch_index': 0,
             'train_loss': [],
             'train_acc': [],
             'loss': [],
@@ -491,12 +491,12 @@ def update_train_state(model, train_state):
     """
 
     # 적어도 한 번 모델을 저장합니다
-    if train_state['each_batch'] == 0:
+    if train_state['epoch_index'] == 0:
         torch.save(model.state_dict(), train_state['model_filename'])
         train_state['stop_early'] = False
 
     # 성능이 향상되면 모델을 저장합니다
-    elif train_state['each_batch'] >= 1:
+    elif train_state['epoch_index'] >= 1:
         loss_tm1, loss_t = train_state['loss'][-2:]
 
         # 손실이 나빠지면
@@ -693,7 +693,7 @@ if __name__ == '__main__' :
     loss_history=[]
     
     for e in range(epochs):
-        
+        train_state['epoch_index'] = e
         
         train_acc = 0.0
         test_acc = 0.0
@@ -701,7 +701,6 @@ if __name__ == '__main__' :
         #TRAINING
         bertmodel.train()
         for batch_id, batch in enumerate(tqdm(train_loader)):
-            train_state['each_batch'] = batch_id
             if batch_id % log_interval == 0 : 
                 print(f"Epoch : {e+1} in {epochs} / Minibatch Step : {batch_id}")
 
